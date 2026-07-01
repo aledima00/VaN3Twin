@@ -62,8 +62,26 @@
 #include "ns3/packet-socket-helper.h"
 #include "ns3/gn-utils.h"
 #include "ns3/csv-utils.h"
+#include <unordered_map>
 
 using namespace ns3;
+
+// ================================================== CONFIGURATION ==================================================
+#define SIM_LENGTH_S 60.0
+#define SIM_SUMO_FOLDER "/home/drivex/TesiAlessandro/VaN3Twin/input/f0_lc_test/"
+#define SIM_SUMO_MOB_TRACE "routes.rou.xml"
+#define SIM_SUMO_CONFIG SIM_SUMO_FOLDER "cfg.sumocfg"
+#define SIM_NO_INTERFERER true // Set to true to disable the interfering vehicle (veh3)
+
+#define SUMO_STEP_LEN_S 0.1 // 100ms
+#define SUMO_SEED 23423 // ! do not change ! default sumo seed.
+#define SUMO_COLLISION_ACTION "remove"
+#define SUMO_ADDITIONAL_CMD_OPTIONS \
+" --collision.check-junctions true" \
+" --time-to-teleport 0" \
+" --lanechange.duration 3.5" \
+" --time-to-impatience 40"
+// ================================================== END ==================================================
 
 NS_LOG_COMPONENT_DEFINE ("V2VSimpleCAMExchange80211p");
 
@@ -71,6 +89,24 @@ NS_LOG_COMPONENT_DEFINE ("V2VSimpleCAMExchange80211p");
 // Variables defined here should always be "static"
 static int packet_count=0;
 BSMap basicServices; // Container for all ETSI Basic Services, installed on all vehicles
+
+static bool TryParseVehStationId(const std::string& vehicleID, unsigned long& stationId)
+{
+  if (vehicleID.rfind("veh", 0) != 0 || vehicleID.size() <= 3)
+    {
+      return false;
+    }
+
+  try
+    {
+      stationId = std::stoul(vehicleID.substr(3));
+      return true;
+    }
+  catch (...)
+    {
+      return false;
+    }
+}
 // ************************************************************************************************
 
 // If you want to make a comparison with a received CAM MAC address, you can use:
@@ -126,14 +162,16 @@ int main (int argc, char *argv[])
   double m_baseline_prr = 150.0; // PRR baseline value (default: 150 m)
   int txPower = 23.0; // IEEE 802.11p transmission power in dBm (default: 23 dBm)
   xmlDocPtr rou_xml_file;
-  double simTime = 100.0; // Total simulation time (default: 100 seconds)
+  double simTime = SIM_LENGTH_S; // Total simulation time (default: 100 seconds)
 
+  // Set here the path to the SUMO XML files (overridable from command line)
+  std::string sumo_folder = SIM_SUMO_FOLDER;
+  std::string mob_trace = SIM_SUMO_MOB_TRACE;
+  std::string sumo_config = SIM_SUMO_CONFIG;
 
-
-  // Set here the path to the SUMO XML files
-  std::string sumo_folder = "src/automotive/examples/sumo_files_v2v_map/";
-  std::string mob_trace = "cars.rou.xml";
-  std::string sumo_config ="src/automotive/examples/sumo_files_v2v_map/map.sumo.cfg";
+  bool no_interferer = SIM_NO_INTERFERER; // Set to true to disable the interfering vehicle (veh3)
+  std::unordered_map<std::string, uint32_t> vehicleNodeIndex;
+  uint32_t nextNodeIndex = 0;
 
   // Read the command line options
   CommandLine cmd (__FILE__);
@@ -217,15 +255,17 @@ int main (int argc, char *argv[])
   Ptr<TraciClient> sumoClient = CreateObject<TraciClient> ();
   sumoClient->SetAttribute ("SumoConfigPath", StringValue (sumo_config));
   sumoClient->SetAttribute ("SumoBinaryPath", StringValue (""));    // use system installation of sumo
-  sumoClient->SetAttribute ("SynchInterval", TimeValue (Seconds (0.01)));
+  sumoClient->SetAttribute ("SynchInterval", TimeValue (Seconds (SUMO_STEP_LEN_S)));
   sumoClient->SetAttribute ("StartTime", TimeValue (Seconds (0.0)));
-  sumoClient->SetAttribute ("SumoGUI", BooleanValue (true));
+  sumoClient->SetAttribute ("SumoGUI", BooleanValue (false)); // Disabled: no X display on SSH
   sumoClient->SetAttribute ("SumoPort", UintegerValue (3400));
   sumoClient->SetAttribute ("PenetrationRate", DoubleValue (1.0));
   sumoClient->SetAttribute ("SumoLogFile", BooleanValue (false));
   sumoClient->SetAttribute ("SumoStepLog", BooleanValue (false));
-  sumoClient->SetAttribute ("SumoSeed", IntegerValue (10));
+  sumoClient->SetAttribute ("SumoSeed", IntegerValue (SUMO_SEED));
   sumoClient->SetAttribute ("SumoWaitForSocket", TimeValue (Seconds (1.0)));
+  sumoClient->SetAttribute ("CollisionAction", StringValue (SUMO_COLLISION_ACTION));
+  sumoClient->SetAttribute ("SumoAdditionalCmdOptions", StringValue (SUMO_ADDITIONAL_CMD_OPTIONS));
 
   // Set up a Metricsupervisor
   // This module enables a trasparent and seamless collection of one-way latency (in ms) and PRR metrics
@@ -234,8 +274,11 @@ int main (int argc, char *argv[])
   MetricSupervisor metSupObj(m_baseline_prr);
   metSup = &metSupObj;
   metSup->setTraCIClient(sumoClient);
-  // Vehicle 3 should *not* be considered in the computation of latency and PRR, as it generates only interfering traffic
-  metSup->addExcludedID(3);
+  // Exclude vehicle 3 from PRR/latency metrics only when it is acting as an interferer
+  if (!no_interferer)
+    {
+      metSup->addExcludedID(3);
+    }
   // This function enables printing the current and average latency and PRR for each received packet
   // metSup->enablePRRVerboseOnStdout ();
 
@@ -276,9 +319,31 @@ int main (int argc, char *argv[])
   // Furthermore, we schedule the transmission of interfering traffic for vehicle 3 only ("veh3")
   STARTUP_FCN setupNewWifiNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
-      unsigned long nodeID = std::stol(vehicleID.substr (3))-1;
+      uint32_t nodeID = 0;
+      auto nodeIt = vehicleNodeIndex.find(vehicleID);
+      if (nodeIt == vehicleNodeIndex.end())
+        {
+          if (nextNodeIndex >= c.GetN())
+            {
+              NS_FATAL_ERROR("Fatal error: not enough pre-created nodes for vehicle " << vehicleID
+                             << ". Increase available nodes or verify SUMO route IDs.");
+            }
+          nodeID = nextNodeIndex;
+          vehicleNodeIndex[vehicleID] = nodeID;
+          ++nextNodeIndex;
+        }
+      else
+        {
+          nodeID = nodeIt->second;
+        }
 
-      if(vehicleID=="veh3")
+      unsigned long stationId = 0;
+      if (!TryParseVehStationId(vehicleID, stationId))
+        {
+          NS_FATAL_ERROR("Fatal error: vehicle ID '" << vehicleID << "' does not match expected format 'veh<number>'.");
+        }
+
+      if(vehicleID=="veh3" && !no_interferer)
       {
         // The interfering traffic generation will start after 1 second ("Seconds (1.0)"), by calling the "GenerateTraffic_interfering" function
         // Then:
@@ -302,7 +367,7 @@ int main (int argc, char *argv[])
           // of periodic CAMs, and the ETSI DEN Basic Service, for the transmission/reception of event-based DENMs
           // An ETSI Basic Services container is a wrapper class to enable easy handling of both CAMs and DENMs
           // The station ID is set to be equal to the SUMO ID without "veh" (i.e., the station ID of "veh1" will be "1")
-          Ptr<BSContainer> bs_container = CreateObject<BSContainer>(std::stol(vehicleID.substr(3)),StationType_passengerCar,sumoClient,false,sock);
+          Ptr<BSContainer> bs_container = CreateObject<BSContainer>(stationId,StationType_passengerCar,sumoClient,false,sock);
           // Setup the PRRsupervisor inside the BSContainer, to make each vehicle collect latency and PRR metrics
           bs_container->linkMetricSupervisor(metSup);
           // This is needed just to simplify the whole application
@@ -345,10 +410,18 @@ int main (int argc, char *argv[])
       // which has exited from the simulated scenario, and should be thus no longer considered
       // We need to get the right Ptr<BSContainer> based on the station ID (not the nodeID used
       // as index for the nodeContainer), so we don't use "-1" to compute "intVehicleID" here
-      unsigned long intVehicleID = std::stol(vehicleID.substr (3));
+      unsigned long intVehicleID = 0;
+      if (!TryParseVehStationId(vehicleID, intVehicleID))
+      {
+        NS_LOG_WARN("Skipping cleanup for unexpected vehicle ID format: " << vehicleID);
+        return;
+      }
 
       Ptr<BSContainer> bsc = basicServices.get(intVehicleID);
-      bsc->cleanup();
+      if (bsc != nullptr)
+      {
+        bsc->cleanup();
+      }
     };
 
   // Link ns-3 and SUMO
