@@ -145,6 +145,9 @@ private:
 
   bool m_sionna = false;
 
+  // additional values
+  std::string m_collisionAction;
+
 };
 
 } // end namespace ns3

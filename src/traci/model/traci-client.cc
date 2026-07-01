@@ -114,7 +114,12 @@ namespace ns3
                   "Name of the network namespace to be used to launch SUMO",
                    StringValue (""),
                    MakeStringAccessor (&TraciClient::m_netns_name),
-                   MakeStringChecker ());
+                   MakeStringChecker ())
+    .AddAttribute ("CollisionAction",
+                  "Action to be taken in case of a collision in SUMO (default: 'none', other options: 'teleport', 'remove', 'warn')",
+                  StringValue ("none"),
+                  MakeStringAccessor (&TraciClient::m_collisionAction),
+                  MakeStringChecker ());
   ;
     return tid;
   }
@@ -211,6 +216,10 @@ namespace ns3
 
     // warnings
     m_sumoCommand += " --no-warnings";
+
+    // collision handling
+    m_sumoCommand += " --collision.action " + m_collisionAction;
+
 
     // sumo log file
     if (m_sumoLogFile)
