@@ -67,20 +67,24 @@
 using namespace ns3;
 
 // ================================================== CONFIGURATION ==================================================
+/* -- replace with the absolute path to the folder containing the SUMO files (.rou.xml, .sumocfg, etc.) */
+#define SIM_SUMO_FOLDER "abs/path/sumo/directory/"
+
+/* -- customize the following with the desired values */
 #define SIM_LENGTH_S 60.0
-#define SIM_SUMO_FOLDER "/home/drivex/TesiAlessandro/VaN3Twin/input/f0_lc_test/"
 #define SIM_SUMO_MOB_TRACE "routes.rou.xml"
 #define SIM_SUMO_CONFIG SIM_SUMO_FOLDER "cfg.sumocfg"
 #define SIM_NO_INTERFERER true // Set to true to disable the interfering vehicle (veh3)
-
-#define SUMO_STEP_LEN_S 0.1 // 100ms
-#define SUMO_SEED 23423 // ! do not change ! default sumo seed.
+#define SUMO_STEP_LEN_S 0.1
 #define SUMO_COLLISION_ACTION "remove"
 #define SUMO_ADDITIONAL_CMD_OPTIONS \
 " --collision.check-junctions true" \
 " --time-to-teleport 0" \
 " --lanechange.duration 3.5" \
 " --time-to-impatience 40"
+
+/* -- warn: do not touch if not needed */
+#define SUMO_SEED 23423 /* default SUMO seed, be aware for reproducibility */
 // ================================================== END ==================================================
 
 NS_LOG_COMPONENT_DEFINE ("V2VSimpleCAMExchange80211p");
